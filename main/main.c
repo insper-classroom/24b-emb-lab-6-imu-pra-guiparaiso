@@ -11,10 +11,35 @@
 #include "mpu6050.h"
 
 #include <Fusion.h>
+#define SAMPLE_PERIOD (0.01f) // replace this with actual sample period
 
 const int MPU_ADDRESS = 0x68;
 const int I2C_SDA_GPIO = 4;
 const int I2C_SCL_GPIO = 5;
+
+
+ void init_uart() {
+    uart_init(uart0, 115200);
+    gpio_set_function(0, GPIO_FUNC_UART);  // TX pin
+    gpio_set_function(1, GPIO_FUNC_UART);  // RX pin
+}
+
+
+void send_data(int axis, int value) {
+    // int8_t data[4];
+    // data[0] = axis;                      // Eixo (0 para X, 1 para Y)
+    // int8_t  = (value >> 8) & 0xFF;       // Byte mais significativo (MSB)
+    // data[2] = value & 0xFF;              // Byte menos significativo (LSB)
+    // data[3] = 0xFF;                      // End of Packet (EOP)
+
+    uart_putc(UART0_BASE, axis);      // Enviar o eixo
+    uart_putc(UART0_BASE, (value >> 8) & 0xFF);       // Enviar o byte mais significativo
+    uart_putc(UART0_BASE, value & 0xFF);              // Enviar o byte menos significativo
+    uart_putc(UART0_BASE, 0xFF);                      // Enviar o byte de fim de pacote
+    // Debug: Imprimir os dados
+    //printf("Eixo: %d, Valor: %d\n", axis, value);
+}
+
 
 static void mpu6050_reset() {
     // Two byte reset. First byte register, second byte data
@@ -67,13 +92,36 @@ void mpu6050_task(void *p) {
 
     mpu6050_reset();
     int16_t acceleration[3], gyro[3], temp;
+    FusionAhrs ahrs;
+    FusionAhrsInitialise(&ahrs);
 
     while(1) {
         mpu6050_read_raw(acceleration, gyro, &temp);
-        printf("Acc. X = %d, Y = %d, Z = %d\n", acceleration[0], acceleration[1], acceleration[2]);
-        printf("Gyro. X = %d, Y = %d, Z = %d\n", gyro[0], gyro[1], gyro[2]);
-        printf("Temp. = %f\n", (temp / 340.0) + 36.53);
+        // printf("Acc. X = %d, Y = %d, Z = %d\n", acceleration[0], acceleration[1], acceleration[2]);
+        // printf("Gyro. X = %d, Y = %d, Z = %d\n", gyro[0], gyro[1], gyro[2]);
+        // printf("Temp. = %f\n", (temp / 340.0) + 36.53);
+        FusionVector gyroscope = {
+            .axis.x = gyro[0] / 131.0f, // Conversão para graus/s
+            .axis.y = gyro[1] / 131.0f,
+            .axis.z = gyro[2] / 131.0f,
+        };
 
+        FusionVector accelerometer = {
+            .axis.x = acceleration[0] / 16384.0f, // Conversão para g
+            .axis.y = acceleration[1] / 16384.0f,
+            .axis.z = acceleration[2] / 16384.0f,
+        }; 
+        FusionAhrsUpdateNoMagnetometer(&ahrs, gyroscope, accelerometer,SAMPLE_PERIOD);
+        FusionEuler euler = FusionQuaternionToEuler(FusionAhrsGetQuaternion(&ahrs));
+
+         // printf("Roll: %f, Pitch: %f, Yaw: %f\n", euler.roll, euler.pitch, euler.yaw);
+
+        if (accelerometer.axis.z > 1.5) {
+            send_data(2, 1);
+
+        }
+        send_data(0,-euler.angle.roll);
+        send_data(1,-euler.angle.yaw);
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
@@ -82,6 +130,7 @@ void mpu6050_task(void *p) {
 
 int main() {
     stdio_init_all();
+    init_uart();
 
     xTaskCreate(mpu6050_task, "mpu6050_Task 1", 8192, NULL, 1, NULL);
 
